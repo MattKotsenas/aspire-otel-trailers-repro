@@ -3,13 +3,10 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
-using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
-using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using System.Diagnostics.Metrics;
 
 namespace Microsoft.Extensions.Hosting;
 
@@ -40,10 +37,25 @@ public static class Extensions
 
     public static IHostApplicationBuilder ConfigureOpenTelemetry(this IHostApplicationBuilder builder)
     {
+        var otlpEndpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
+        var useOtlpExporter = !string.IsNullOrWhiteSpace(otlpEndpoint);
+
         builder.Logging.AddOpenTelemetry(logging =>
         {
             logging.IncludeFormattedMessage = true;
             logging.IncludeScopes = true;
+
+            if (useOtlpExporter)
+            {
+                logging.AddOtlpExporter(options =>
+                {
+                    options.Endpoint = new Uri(otlpEndpoint);
+                    options.Protocol = OtlpExportProtocol.Grpc;
+
+                    // TODO: Comment this out to unbreak the Aspire dashboard
+                    options.Headers = "te=trailers";
+                });
+            }
         });
 
         builder.Services.AddOpenTelemetry()
@@ -52,6 +64,19 @@ public static class Extensions
                 metrics.AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
                     .AddRuntimeInstrumentation();
+
+                if (useOtlpExporter)
+                {
+                    metrics.AddOtlpExporter((options, metricReaderOptions) =>
+                        {
+                            options.Protocol = OtlpExportProtocol.Grpc;
+                            options.Endpoint = new Uri(otlpEndpoint);
+                            metricReaderOptions.TemporalityPreference = MetricReaderTemporalityPreference.Delta;
+
+                            // TODO: Comment this out to unbreak the Aspire dashboard
+                            options.Headers = "te=trailers";
+                        });
+                }
             })
             .WithTracing(tracing =>
             {
@@ -59,72 +84,19 @@ public static class Extensions
                     // Uncomment the following line to enable gRPC instrumentation (requires the OpenTelemetry.Instrumentation.GrpcNetClient package)
                     //.AddGrpcClientInstrumentation()
                     .AddHttpClientInstrumentation();
-            });
 
-        builder.AddOpenTelemetryExporters();
-
-        return builder;
-    }
-
-    private static IHostApplicationBuilder AddOpenTelemetryExporters(this IHostApplicationBuilder builder)
-    {
-        var otlpEndpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
-        var useOtlpExporter = !string.IsNullOrWhiteSpace(otlpEndpoint);
-
-        if (useOtlpExporter)
-        {
-            builder.Logging.AddOpenTelemetry(logging =>
-            {
-                logging.IncludeFormattedMessage = true;
-                logging.IncludeScopes = true;
-
-                logging.AddOtlpExporter(options =>
+                if (useOtlpExporter)
                 {
-                    options.Endpoint = new Uri(otlpEndpoint);
-                    options.Protocol = OtlpExportProtocol.Grpc;
+                    tracing.AddOtlpExporter(options =>
+                        {
+                            options.Protocol = OtlpExportProtocol.Grpc;
+                            options.Endpoint = new Uri(otlpEndpoint);
 
-                    //options.Headers = "te=trailers";
-                });
+                            // TODO: Comment this out to unbreak the Aspire dashboard
+                            options.Headers = "te=trailers";
+                        });
+                }
             });
-
-            builder.Services.AddOpenTelemetry()
-            .WithMetrics(metrics =>
-            {
-                metrics
-                    .AddAspNetCoreInstrumentation()
-                    .AddHttpClientInstrumentation()
-                    .AddRuntimeInstrumentation()
-                    .AddOtlpExporter((options, metricReaderOptions) =>
-                    {
-                        options.Protocol = OtlpExportProtocol.Grpc;
-                        options.Endpoint = new Uri(otlpEndpoint);
-                        //options.Headers = "te=trailers";
-
-                        metricReaderOptions.TemporalityPreference = MetricReaderTemporalityPreference.Delta;
-                    });
-            })
-            .WithTracing(tracing =>
-            {
-                tracing.SetErrorStatusOnException(false);
-
-                tracing
-                    .AddAspNetCoreInstrumentation()
-                    .AddHttpClientInstrumentation()
-                    .AddOtlpExporter(options =>
-                    {
-                        options.Protocol = OtlpExportProtocol.Grpc;
-                        options.Endpoint = new Uri(otlpEndpoint);
-                        //options.Headers = "te=trailers";
-                    });
-            });
-        }
-
-        // Uncomment the following lines to enable the Azure Monitor exporter (requires the Azure.Monitor.OpenTelemetry.AspNetCore package)
-        //if (!string.IsNullOrEmpty(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
-        //{
-        //    builder.Services.AddOpenTelemetry()
-        //       .UseAzureMonitor();
-        //}
 
         return builder;
     }
